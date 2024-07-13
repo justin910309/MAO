@@ -43,73 +43,88 @@ def process_data(files, start_date, end_date):
         print("No data available after processing. Please check your files and date range.")
         return pd.DataFrame()
 
-
-
-
-def rebalance_portfolio(df_prices, weights, initial_investment=100000, rebalance_period='120D'):
+def rebalance_portfolio(df_prices, weights, initial_investment=100000, rebalance_period='365D', commission_rate=0.001425, tax_rate=0.003):
     current_value = initial_investment
     rebalance_dates = pd.date_range(start=df_prices.index.min(), end=df_prices.index.max(), freq=rebalance_period)
     
     returns_list = []
+    daily_values = [initial_investment]
 
     for i in range(len(rebalance_dates)-1):
         period_start = rebalance_dates[i]
         period_end = rebalance_dates[i+1] if i < len(rebalance_dates)-2 else df_prices.index.max()
 
-        if period_start not in df_prices.index:
+        if period_start not in df_prices.index or period_end not in df_prices.index:
             continue
 
+        # Calculate investments per stock at the start of the period
         investment_per_stock = {stock: current_value * weight for stock, weight in weights.items()}
         prices_at_start = df_prices.loc[period_start]
-        shares = {stock: investment / prices_at_start[stock] for stock, investment in investment_per_stock.items()}
+        shares = {stock: investment / prices_at_start[stock] for stock, investment in investment_per_stock.items() if prices_at_start[stock] > 0}
 
+        # Subtract commission for buying
+        buying_commission = sum(investment_per_stock[stock] * commission_rate for stock in shares)
+        current_value -= buying_commission
+
+        # Calculate values and returns within the period
+        period_values = df_prices.loc[period_start:period_end].apply(lambda prices: sum(shares[stock] * prices[stock] for stock in shares), axis=1)
+        daily_values.extend(period_values[1:].tolist())
+        daily_returns = pd.concat([pd.Series(daily_values).pct_change().dropna()])
+
+        # Calculate values at the end of the period
         prices_at_end = df_prices.loc[period_end]
         value_at_end = sum(shares[stock] * prices_at_end.get(stock, 0) for stock in shares)
 
-        period_return = (value_at_end - current_value) / current_value
-        returns_list.append(period_return)
+        # Subtract commission and taxes for selling
+        selling_commission = sum(shares[stock] * prices_at_end.get(stock, 0) * commission_rate for stock in shares if stock in prices_at_end)
+        taxes = sum(shares[stock] * prices_at_end.get(stock, 0) * tax_rate for stock in shares if stock in prices_at_end)
+        value_at_end -= (selling_commission + taxes)
 
         current_value = value_at_end
 
-    total_return = sum(returns_list)
-    print("Periodic returns:", returns_list)
-    print("Total return:", total_return)
-    # 打印最终投资组合的价值
-    print("Final portfolio value:", current_value)
+    # Calculate total return
+    total_return = current_value - initial_investment
 
-    return returns_list, total_return, current_value
+    # Calculate return percentage
+    return_percentage = (total_return / initial_investment) * 100
 
+    # Calculate annualized return
+    annualized_return = ((current_value / initial_investment) ** (252 / len(df_prices))) - 1
 
-# Update these paths to match your file locations
-weights_csv_path = 'C:/Users/User/Desktop/123/Optimal_Weights_2012_2017-1.csv'
-data_folder_path = 'C:/Users/User/Desktop/台股資料'
+    # Calculate Sharpe ratio, assuming a risk-free rate of 0.01 (1%)
+    risk_free_rate = 0.01
+    excess_returns = daily_returns - (risk_free_rate / 252)
+    sharpe_ratio = np.sqrt(252) * (excess_returns.mean() / excess_returns.std())
 
-# Read weights and process data
+    # Calculate maximum drawdown
+    cumulative_returns = (1 + daily_returns).cumprod()
+    drawdown = (cumulative_returns / cumulative_returns.cummax()) - 1
+    max_drawdown = drawdown.min()
+
+    performance_metrics = {
+        'Total Final Value': current_value,
+        'Total Return': total_return,
+        'Return Percentage': return_percentage,
+        'Annualized Return': annualized_return,
+        'Sharpe Ratio': sharpe_ratio,
+        'Max Drawdown': max_drawdown
+    }
+
+    print("Performance Metrics with Rebalance:", performance_metrics)
+    return performance_metrics
+
+# 更新文件路径
+weights_csv_path = 'C:/Users/User/Desktop/123/權重/Optimal_Weights_2012_2015負all.csv'
+data_folder_path = 'C:/Users/User/Desktop/台股資料/'
+
+# 读取权重和处理数据
 weights = read_weights_from_csv(weights_csv_path)
 csv_files = glob.glob(os.path.join(data_folder_path, '*.csv'))
 
-# Process data for 2018 and calculate returns
-df_prices_2018 = process_data(csv_files, "2018-01-01", "2020-12-31")
-if not df_prices_2018.empty:
-    returns_list, total_return, final_portfolio_value = rebalance_portfolio(df_prices_2018, weights, initial_investment=100000, rebalance_period='120D')
-    print("Periodic returns:", returns_list)
-    print("Total return:", total_return)
-    print("Final portfolio value:", final_portfolio_value)
+# 处理数据并计算收益
+df_prices = process_data(csv_files, "2012-05-02", "2015-12-31")
+
+if not df_prices.empty:
+    performance_metrics = rebalance_portfolio(df_prices, weights, initial_investment=100000, rebalance_period='365D')
 else:
     print("No data available for the specified period.")
-
-
-# 计算日收益率
-returns_2018 = df_prices_2018.pct_change().dropna()
-
-# 计算相关性矩阵
-correlation_matrix = returns_2018.corr()
-output_file_path = 'C:/Users/User/Desktop/123/correlation_matrix.csv'
-
-# 将相关性矩阵导出到CSV文件
-#correlation_matrix.to_csv(output_file_path)
-# 打印相关性矩阵
-print("Correlation Matrix:")
-print(correlation_matrix)
-
-
